@@ -1,18 +1,24 @@
 <template>
   <div class = "game-page">
     <div class = "game-page__header">
-      <div class = "game-page__coins"> Coins: {{ getCoins }}</div>
-      <div class = "game-page__controls">
-        <button class = "game-page__btn" @click = "() => addTestEnemy()">
-          Add Enemy
-        </button>
-        <button class = "game-page__btn" @click = "() => clearEnemies()">
-          Clear Enemies
-        </button>
-      </div>
+      <div class = "game-page__coins"> Монеты: {{ getCoins }}</div>
+        <div class = "game-page__level-controls">
+        <button 
+            class = "game-page__btn" 
+            :class = "{ 'game-page__btn--active': currentLevel === 1 }" 
+            @click = "() => changeLevel(1)"
+        >Уровень 1</button>
+        <button 
+          class = "game-page__btn" 
+          :class = "{ 'game-page__btn--active': currentLevel === 2 }" 
+          @click = "() => changeLevel(2)"
+        >Уровень 2</button>
+        </div>
     </div>
 
-    <div ref = "gameArea" class = "game-page__game-area" @click = "() => handleGameAreaClick($event)">
+    
+
+    <div ref = "gameArea" class = "game-page__game-area" @click="handleGameAreaClick">
     <svg class = "game-page__route-svg" viewBox = "0 0 900 600">
       <path
         v-for = "route in getLevel.routes"
@@ -67,45 +73,53 @@
     </div>
 
     <div v-if = "getSelectedTower" class = "game-page__tower-panel">
-      <h3 class = "game-page__panel-title">Tower Stats</h3>
-      <div class = "game-page__stat">Level: {{ getSelectedTower.level }}</div>
-      <div class = "game-page__stat">Damage: {{ getSelectedTower.damage }}</div>
-      <div class = "game-page__stat">Health: {{ getSelectedTower.health }}</div>
-      <div class = "game-page__stat">Fire Rate: {{ getSelectedTower.fireRate }}ms</div>
-      <div class = "game-page__stat">Range: {{ getSelectedTower.range }}px</div>
+      <h3 class = "game-page__panel-title">Характеристики башни</h3>
+      <div class = "game-page__stat">Уровень: {{ getSelectedTower.level }}</div>
+      <div class = "game-page__stat">Урон: {{ getSelectedTower.damage }}</div>
+      <div class = "game-page__stat">Здоровье: {{ getSelectedTower.health }}</div>
+      <div class = "game-page__stat">Скорость стрельбы: {{ getSelectedTower.fireRate }}ms</div>
+      <div class = "game-page__stat">Дальность: {{ getSelectedTower.range }}px</div>
       <button
         class = "game-page__upgrade-btn"
-        @click = "() => upgradeTower(getSelectedTower.id, 'damage')"
+        @click="() => upgradeTower({ towerId: getSelectedTower.id, upgradeType: 'damage' })"
       >
-        Upgrade Damage ({{ getSelectedTower.level * 30 }})
+        Улучшить урон ({{ getSelectedTower.level * 30 }})
       </button>
       <button
         class = "game-page__upgrade-btn"
-        @click = "() => upgradeTower(getSelectedTower.id, 'health')"
+        @click="() => upgradeTower({ towerId: getSelectedTower.id, upgradeType: 'health' })"
       >
-        Upgrade Health ({{ getSelectedTower.level * 30 }})
+        Улучшить здоровье ({{ getSelectedTower.level * 30 }})
       </button>
       <button
         class = "game-page__upgrade-btn"
-        @click = "() => upgradeTower(getSelectedTower.id, 'fireRate')"
+        @click = "() => upgradeTower({ towerId: getSelectedTower.id, upgradeType: 'fireRate' })"
       >
-        Upgrade Speed ({{ getSelectedTower.level * 30 }})
+        Улучшить скорость ({{ getSelectedTower.level * 30 }})
       </button>
       <button
         class = "game-page__upgrade-btn"
-        @click = "() => upgradeTower(getSelectedTower.id, 'range')"
+        @click = "() => upgradeTower({ towerId: getSelectedTower.id, upgradeType: 'range' })"
       >
-        Upgrade Range ({{ getSelectedTower.level * 30 }})
+        Улучшить дальность ({{ getSelectedTower.level * 30 }})
       </button>
       <button class = "game-page__remove-btn" @click = "() => removeTower(getSelectedTower.id)">
-        Remove Tower (+25)
+        Убрать башню (+25)
       </button>
     </div>
 
     <div class = "game-page__info">
-      <p>Click on slots to place towers (50)</p>
-      <p>Click on tower to select and upgrade</p>
-      <p>Use arrow keys to move enemies</p>
+      <p>Нажмите на слоты для размещения башен (50)</p>
+      <p>Нажмите на башню для выбора и улучшения</p>
+      <p>Используйте стрелки для перемещения врагов</p>
+    </div>
+
+    <div v-if="isGameOver" class="game-over-overlay" @click.stop>
+      <div class="game-over-content">
+        <h2>Игра окончена!</h2>
+        <p>Противник прорвался. Вы проиграли.</p>
+        <button class="game-over-btn" @click.stop="restartGame"> Начать заново</button>
+      </div>
     </div>
   </div>
 </template>
@@ -181,8 +195,13 @@ export default {
   data() {
     return {
       currentLevel: 1,
-      enemyMoveInterval: null,
       selectedEnemy: null,
+      animationFrameId: null,
+      waveInterval: null,
+      enemiesSpawned: 0,
+      maxEnemiesPerWave: 5,
+      towerShootInterval: null,
+      enemyTypes: ['basic', 'tank', 'fast'],
     }
   },
   computed: {
@@ -193,21 +212,27 @@ export default {
       'getSelectedTower',
       'getCoins',
       'getTowerPositions',
+      'isGameOver',
     ]),
   },
   mounted() {
     this.loadLevel(this.currentLevel)
     document.addEventListener('keydown', this.handleKeyPress)
     this.towerShooting()
+    this.startEnemyMovement()
+    this.startWaveSpawner()
   },
   beforeUnmount() {
     document.removeEventListener('keydown', this.handleKeyPress)
-    if (this.enemyMoveInterval) {
-      clearInterval(this.enemyMoveInterval)
-    }
     if (this.towerShootInterval) {
-    clearInterval(this.towerShootInterval)
-  }
+      clearInterval(this.towerShootInterval)
+    }
+    if (this.animationFrameId) {
+      cancelAnimationFrame(this.animationFrameId)
+    }
+    if (this.waveInterval) {
+      clearInterval(this.waveInterval)
+    }
   },
   methods: {
     ...mapActions('game', [
@@ -218,7 +243,33 @@ export default {
       'addEnemy',
       'moveEnemy',
       'selectTower',
+      'setEnemies',
+      'addCoins',
+      'setGameOver',
+      'resetGame',
     ]),
+    stopAllLoops() {
+      if (this.towerShootInterval) { clearInterval(this.towerShootInterval); this.towerShootInterval = null; }
+      if (this.waveInterval) { clearInterval(this.waveInterval); this.waveInterval = null; }
+      if (this.animationFrameId) { cancelAnimationFrame(this.animationFrameId); this.animationFrameId = null; }
+    },
+    changeLevel(level) {
+      if (this.currentLevel === level) return;
+      this.stopAllLoops();
+      this.setEnemies([]);
+      this.getTowers.forEach(t => this.removeTower(t.id));
+      this.selectTower(null);
+      this.currentLevel = level;
+      this.enemiesSpawned = 0;
+      this.loadLevel(level);
+      
+      this.$nextTick(() => {
+        this.towerShooting();
+        this.startEnemyMovement();
+        this.startWaveSpawner();
+      });
+    },
+
     loadLevel(levelNum) {
       if (LEVELS[levelNum]) {
         this.setLevel(LEVELS[levelNum])
@@ -251,6 +302,7 @@ export default {
       }
       this.addTower({ x: position.x, y: position.y, cost: 50 })
     },
+
     selectEnemy(enemy) {
       this.selectedEnemy = enemy
     },
@@ -266,37 +318,86 @@ export default {
     },
     towerShooting() {
       this.towerShootInterval = setInterval(() => {
-        const currentEnemies = [...this.getEnemies];
+        if (this.isGameOver) {
+          clearInterval(this.towerShootInterval);
+          this.towerShootInterval = null;
+          return;
+        }
+        
         let coinsEarned = 0;
-        this.getTowers.forEach(tower => {
-          const target = currentEnemies.find(enemy => {
+        const updatedEnemies = this.getEnemies.map(enemy => {
+          let currentHealth = enemy.health;
+          this.getTowers.forEach(tower => {
             const dx = enemy.x - tower.x;
             const dy = enemy.y - tower.y;
-            return Math.sqrt(dx * dx + dy * dy) <= tower.range;
-          });
-          
-          if (target) {
-            target.health -= tower.damage;
-            if (target.health <= 0) {
-              coinsEarned += 10;
+            if (Math.sqrt(dx * dx + dy * dy) <= tower.range) {
+              currentHealth -= tower.damage;
             }
+          });
+
+          if (currentHealth <= 0) {
+            coinsEarned += enemy.reward || 10;
+            return null;
           }
-        });
-        const aliveEnemies = currentEnemies.filter(e => e.health > 0);
-        this.setEnemies(aliveEnemies);
-        if (coinsEarned > 0) {
-          this.addCoins(coinsEarned);
-        }
+          return { ...enemy, health: currentHealth };
+        }).filter(Boolean);
+
+        this.setEnemies(updatedEnemies);
+        if (coinsEarned > 0) this.addCoins(coinsEarned);
       }, 1000);
     },
-    addTestEnemy() {
-      const startX = this.getLevel.routes[0]?.points[0]?.x || 0
-      const startY = this.getLevel.routes[0]?.points[0]?.y || 100
-      this.addEnemy({ x: startX, y: startY, health: 50 + this.currentLevel * 10 })
+
+    startWaveSpawner() {
+      this.enemiesSpawned = 0
+      const spawnInterval = this.currentLevel === 1 ? 10000 : 800
+      this.waveInterval = setInterval(() => {
+        if (this.isGameOver) {
+          clearInterval(this.waveInterval)
+          return
+        }
+
+        if (this.enemiesSpawned < this.maxEnemiesPerWave) {
+          const type = this.enemyTypes[Math.floor(Math.random() * this.enemyTypes.length)];
+          this.addTestEnemy(type)
+          this.enemiesSpawned++
+        } else {
+          if (this.enemiesSpawned >= this.maxEnemiesPerWave) {
+             clearInterval(this.waveInterval);
+          }
+        }
+      }, spawnInterval)
     },
-    clearEnemies() {
-     this.setEnemies([]);
-    }, 
+
+    restartGame() {
+      this.stopAllLoops();
+      this.resetGame();
+      this.currentLevel = 1;
+      this.enemiesSpawned = 0;
+      this.selectedEnemy = null;
+      this.selectTower(null);
+      this.loadLevel(1);
+
+      this.$nextTick(() => {
+        this.towerShooting();
+        this.startEnemyMovement();
+        this.startWaveSpawner();
+      });
+    },
+
+    addTestEnemy(type = 'basic') {
+      const route = this.getLevel.routes[0]
+      if (!route || !route.points || route.points.length === 0) return
+      
+      const startPoint = route.points[0]
+      
+      this.addEnemy({ 
+        x: startPoint.x, 
+        y: startPoint.y, 
+        type: type || 'basic',
+        routeId: route.id,
+        currentPointIndex: 0,
+      })
+    },
     handleKeyPress(event) {
       if (!this.selectedEnemy) return
 
@@ -323,6 +424,65 @@ export default {
 
       this.moveEnemy({ enemyId: this.selectedEnemy.id, x: newX, y: newY })
     },
+
+    startEnemyMovement() {
+      const move = () => {
+        if (this.isGameOver) {
+          this.stopAllLoops();
+          return;
+        }
+
+        if (this.getEnemies.length === 0) {
+          this.animationFrameId = requestAnimationFrame(move);
+          return;
+        }
+
+        let reachedEnd = false;
+        const updatedEnemies = this.getEnemies.map(enemy => {
+          if (!enemy.routeId) return enemy;
+          
+          const route = this.getLevel.routes.find(r => r.id === enemy.routeId);
+          if (!route || !route.points || route.points.length === 0) return enemy;
+
+          const nextIndex = enemy.currentPointIndex + 1;
+          const nextPoint = route.points[nextIndex];
+
+          if (!nextPoint) {
+            reachedEnd = true;
+            return null;
+          }
+          
+          const dx = nextPoint.x - enemy.x;
+          const dy = nextPoint.y - enemy.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          const speed = enemy.speed || 1.5;
+
+          let newX, newY, newIndex;
+          if (dist <= speed) {
+            newX = nextPoint.x;
+            newY = nextPoint.y;
+            newIndex = nextIndex;
+          } else {
+            newX = enemy.x + (dx / dist) * speed;
+            newY = enemy.y + (dy / dist) * speed;
+            newIndex = enemy.currentPointIndex;
+          }
+          return { ...enemy, x: newX, y: newY, currentPointIndex: newIndex };
+        }).filter(Boolean);
+
+        this.setEnemies(updatedEnemies);
+
+        if (reachedEnd) {
+          this.stopAllLoops();
+          this.setGameOver();
+          return;
+        }
+
+        this.animationFrameId = requestAnimationFrame(move);
+      };
+      
+      this.animationFrameId = requestAnimationFrame(move);
+    },
   },
 }
 </script>
@@ -342,6 +502,8 @@ export default {
     padding: 15px;
     background: #16213e;
     border-radius: 10px;
+    flex-wrap: wrap;
+    gap: 10px;
   }
 
   &__coins {
@@ -355,6 +517,12 @@ export default {
     gap: 10px;
   }
 
+   &__level-controls {
+    display: flex;
+    gap: 8px;
+    margin-left: 15px;
+  }
+
   &__btn {
     padding: 10px 20px;
     background: #0f3460;
@@ -364,6 +532,12 @@ export default {
     cursor: pointer;
     font-size: 14px;
     transition: background 0.3s;
+
+    &--active {
+      background: #e94560 !important;
+      font-weight: bold;
+      box-shadow: 0 0 8px rgba(233, 69, 96, 0.6);
+    }
 
     &:hover {
       background: #e94560;
@@ -486,5 +660,46 @@ export default {
       margin: 5px 0;
     }
   }
+
+  .game-over-overlay {
+  position: fixed !important;
+  top: 0; left: 0;
+  width: 100vw; height: 100vh;
+  background: rgba(0, 0, 0, 0.85) !important;
+  display: flex !important;
+  justify-content: center;
+  align-items: center;
+  z-index: 99999 !important;
+  backdrop-filter: blur(5px);
+}
+
+.game-over-content {
+  background: #16213e;
+  padding: 40px;
+  border-radius: 15px;
+  text-align: center;
+  box-shadow: 0 0 30px rgba(233, 69, 96, 0.6);
+  border: 2px solid #e94560;
+
+  h2 { color: #e94560; font-size: 32px; margin: 0 0 10px; }
+  p { color: #ccc; font-size: 18px; margin: 0 0 25px; }
+}
+
+.game-over-btn {
+  padding: 12px 35px;
+  background: #e94560;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 18px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: transform 0.2s, background 0.2s;
+
+  &:hover {
+    background: #c73e54;
+    transform: scale(1.05);
+  }
+}
 }
 </style>
