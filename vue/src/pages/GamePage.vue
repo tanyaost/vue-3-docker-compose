@@ -14,6 +14,20 @@
           @click = "() => changeLevel(2)"
         >Уровень 2</button>
         </div>
+        <button 
+          class = "game-page__btn" 
+          :class = "{ 'game-page__btn--active': isBarrierMode }" 
+          @click = "() => isBarrierMode = !isBarrierMode"
+        >Режим барьера ({{ getBarrierCost }})</button>
+        <button 
+          class="game-page__btn" 
+          @click="() => addFighter()"
+        >Вызвать бойца ({{ getFighterCost }})</button>
+        <button 
+          class="game-page__btn" 
+          :class="{ 'game-page__btn--active': isArtilleryMode }"
+          @click="() => isArtilleryMode = !isArtilleryMode"
+        >Артиллерия ({{ artilleryCost }})</button>
     </div>
 
     
@@ -47,6 +61,13 @@
     </svg>
 
       <div
+        v-for="exp in explosions"
+        :key="exp.id"
+        class="artillery-explosion"
+        :style="{ left: exp.x + 'px', top: exp.y + 'px' }"
+      ></div>
+
+      <div
         v-for = "position in getTowerPositions"
         :key = "position.id"
         class = "game-page__tower-slot"
@@ -69,6 +90,21 @@
         :enemy = "enemy"
         @select = "() => selectEnemy(enemy)"
         @move = "(e) => handleEnemyDrag(enemy, e)"
+      />
+
+      <Barrier
+        v-for = "barrier in getBarriers"
+        :key = "barrier.id"
+        :barrier = "barrier"
+        @select = "() => selectBarrier(barrier)"
+        @remove = "() => removeBarrier(barrier.id)"
+      />
+
+      <Fighter
+        v-for="fighter in getFighters"
+        :key="fighter.id"
+        :fighter="fighter"
+        @remove="() => removeFighter(fighter.id)"
       />
     </div>
 
@@ -128,6 +164,8 @@
 import { mapGetters, mapActions } from 'vuex'
 import Tower from '../ui/Tower.vue'
 import Enemy from '../ui/Enemy.vue'
+import Barrier from '../ui/Barrier.vue'
+import Fighter from '../ui/Fighter.vue'
 
 const LEVELS = {
         1: {
@@ -191,6 +229,8 @@ export default {
   components: {
     Tower,
     Enemy,
+    Barrier,
+    Fighter,
   },
   data() {
     return {
@@ -201,7 +241,17 @@ export default {
       enemiesSpawned: 0,
       maxEnemiesPerWave: 5,
       towerShootInterval: null,
-      enemyTypes: ['basic', 'tank', 'fast'],
+      enemyTypes: ['basic', 'tank', 'fast', 'archer', 'elite_archer'],
+      isBarrierMode: false,
+      getBarrierCost: 30,
+      isFighterMode: false,
+      getFighterCost: 40,
+      fighterAnimationFrameId: null,
+      isArtilleryMode: false,
+      artilleryCost: 150,
+      artilleryRadius: 100,
+      artilleryDamage: 200,
+      explosions: [],
     }
   },
   computed: {
@@ -213,6 +263,8 @@ export default {
       'getCoins',
       'getTowerPositions',
       'isGameOver',
+      'getBarriers',
+      'getFighters',
     ]),
   },
   mounted() {
@@ -221,6 +273,8 @@ export default {
     this.towerShooting()
     this.startEnemyMovement()
     this.startWaveSpawner()
+    this.startFighterMovement()
+    this.startEnemyShooting()
   },
   beforeUnmount() {
     document.removeEventListener('keydown', this.handleKeyPress)
@@ -232,6 +286,9 @@ export default {
     }
     if (this.waveInterval) {
       clearInterval(this.waveInterval)
+    }
+    if (this.fighterAnimationFrameId) {
+      cancelAnimationFrame(this.fighterAnimationFrameId)
     }
   },
   methods: {
@@ -247,16 +304,35 @@ export default {
       'addCoins',
       'setGameOver',
       'resetGame',
+      'addBarrier',
+      'removeBarrier',
+      'setBarriers',
+      'addFighter',
+      'removeFighter',
+      'setFighters',
+      'setTowers',
+      'processTowerShooting',
+      'processEnemyMovement',
+      'processFighterMovement',
+      'processEnemyShooting',
+      'processArtilleryFire',
     ]),
+    selectBarrier(barrier) {
+      console.log('Выбран барьер:', barrier)
+    },
     stopAllLoops() {
       if (this.towerShootInterval) { clearInterval(this.towerShootInterval); this.towerShootInterval = null; }
       if (this.waveInterval) { clearInterval(this.waveInterval); this.waveInterval = null; }
       if (this.animationFrameId) { cancelAnimationFrame(this.animationFrameId); this.animationFrameId = null; }
+      if (this.fighterAnimationFrameId) { cancelAnimationFrame(this.fighterAnimationFrameId); this.fighterAnimationFrameId = null; }
+      if (this.enemyShootInterval) { clearInterval(this.enemyShootInterval); this.enemyShootInterval = null; }
     },
     changeLevel(level) {
       if (this.currentLevel === level) return;
       this.stopAllLoops();
       this.setEnemies([]);
+      this.setBarriers([]);
+      this.setFighters([]);
       this.getTowers.forEach(t => this.removeTower(t.id));
       this.selectTower(null);
       this.currentLevel = level;
@@ -267,6 +343,9 @@ export default {
         this.towerShooting();
         this.startEnemyMovement();
         this.startWaveSpawner();
+        this.startFighterMovement();
+        this.startEnemyShooting();
+        this.explosions = [];
       });
     },
 
@@ -290,6 +369,26 @@ export default {
     },
     handleGameAreaClick(event) {
       if (event.target === event.currentTarget) {
+          const rect = event.currentTarget.getBoundingClientRect()
+          const x = event.clientX - rect.left
+          const y = event.clientY - rect.top
+
+          if (this.isArtilleryMode) {
+            this.fireArtillery({ x, y })
+            return
+          }
+
+          if (this.isBarrierMode) {
+            
+            if (!this.isPointOnRoute(x, y)) {
+              console.warn('Барьер можно ставить только на дороге!');
+              return;
+            }
+
+            this.addBarrier({ x, y })
+            return
+          }
+
         this.selectTower(null)
       }
     },
@@ -324,26 +423,7 @@ export default {
           return;
         }
         
-        let coinsEarned = 0;
-        const updatedEnemies = this.getEnemies.map(enemy => {
-          let currentHealth = enemy.health;
-          this.getTowers.forEach(tower => {
-            const dx = enemy.x - tower.x;
-            const dy = enemy.y - tower.y;
-            if (Math.sqrt(dx * dx + dy * dy) <= tower.range) {
-              currentHealth -= tower.damage;
-            }
-          });
-
-          if (currentHealth <= 0) {
-            coinsEarned += enemy.reward || 10;
-            return null;
-          }
-          return { ...enemy, health: currentHealth };
-        }).filter(Boolean);
-
-        this.setEnemies(updatedEnemies);
-        if (coinsEarned > 0) this.addCoins(coinsEarned);
+        this.processTowerShooting();
       }, 1000);
     },
 
@@ -381,6 +461,9 @@ export default {
         this.towerShooting();
         this.startEnemyMovement();
         this.startWaveSpawner();
+        this.startFighterMovement();
+        this.startEnemyShooting();
+        this.explosions = [];
       });
     },
 
@@ -432,56 +515,98 @@ export default {
           return;
         }
 
-        if (this.getEnemies.length === 0) {
-          this.animationFrameId = requestAnimationFrame(move);
-          return;
-        }
-
-        let reachedEnd = false;
-        const updatedEnemies = this.getEnemies.map(enemy => {
-          if (!enemy.routeId) return enemy;
-          
-          const route = this.getLevel.routes.find(r => r.id === enemy.routeId);
-          if (!route || !route.points || route.points.length === 0) return enemy;
-
-          const nextIndex = enemy.currentPointIndex + 1;
-          const nextPoint = route.points[nextIndex];
-
-          if (!nextPoint) {
-            reachedEnd = true;
-            return null;
-          }
-          
-          const dx = nextPoint.x - enemy.x;
-          const dy = nextPoint.y - enemy.y;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-          const speed = enemy.speed || 1.5;
-
-          let newX, newY, newIndex;
-          if (dist <= speed) {
-            newX = nextPoint.x;
-            newY = nextPoint.y;
-            newIndex = nextIndex;
-          } else {
-            newX = enemy.x + (dx / dist) * speed;
-            newY = enemy.y + (dy / dist) * speed;
-            newIndex = enemy.currentPointIndex;
-          }
-          return { ...enemy, x: newX, y: newY, currentPointIndex: newIndex };
-        }).filter(Boolean);
-
-        this.setEnemies(updatedEnemies);
-
-        if (reachedEnd) {
-          this.stopAllLoops();
-          this.setGameOver();
-          return;
-        }
+        this.processEnemyMovement();
 
         this.animationFrameId = requestAnimationFrame(move);
       };
       
       this.animationFrameId = requestAnimationFrame(move);
+    },
+
+    startFighterMovement() {
+      const move = () => {
+        if (this.isGameOver) {
+          this.fighterAnimationFrameId = null;
+          return;
+        }
+
+        this.processFighterMovement();
+        
+        this.fighterAnimationFrameId = requestAnimationFrame(move);
+      };
+
+      this.fighterAnimationFrameId = requestAnimationFrame(move);
+    },
+
+    startEnemyShooting() {
+      this.enemyShootInterval = setInterval(() => {
+        if (this.isGameOver) {
+          clearInterval(this.enemyShootInterval);
+          this.enemyShootInterval = null;
+          return;
+        }
+
+        this.processEnemyShooting();
+     }, 1000);
+    },
+
+    fireArtillery(target) {
+      const success = this.processArtilleryFire({
+        x: target.x,
+        y: target.y,
+        cost: this.artilleryCost,
+        radius: this.artilleryRadius,
+        damage: this.artilleryDamage
+      });
+
+      if (success) {
+        const id = Date.now();
+        this.explosions.push({ id, x: target.x, y: target.y });
+        setTimeout(() => {
+          this.explosions = this.explosions.filter(e => e.id !== id);
+        }, 600); 
+      }
+    },
+
+    isPointOnRoute(x, y) {
+      const routes = this.getLevel.routes;
+      if (!routes || routes.length === 0) return false;
+      
+      const threshold = 25;
+
+      for (const route of routes) {
+        const points = route.points;
+        for (let i = 0; i < points.length - 1; i++) {
+          const p1 = points[i];
+          const p2 = points[i + 1];
+
+          const A = x - p1.x;
+          const B = y - p1.y;
+          const C = p2.x - p1.x;
+          const D = p2.y - p1.y;
+
+          const dot = A * C + B * D;
+          const lenSq = C * C + D * D;
+          let param = lenSq !== 0 ? dot / lenSq : -1;
+
+          let xx, yy;
+          if (param < 0) {
+            xx = p1.x; yy = p1.y;
+          } else if (param > 1) {
+            xx = p2.x; yy = p2.y;
+          } else {
+            xx = p1.x + param * C;
+            yy = p1.y + param * D;
+          }
+
+          const dx = x - xx;
+          const dy = y - yy;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+
+          if (dist <= threshold) return true;
+        }
+      }
+      return false;
     },
   },
 }
@@ -700,6 +825,19 @@ export default {
     background: #c73e54;
     transform: scale(1.05);
   }
+}
+
+.artillery-explosion {
+  position: absolute;
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255,165,0,0.8) 0%, rgba(255,69,0,0.4) 60%, transparent 100%);
+  border: 2px solid rgba(255, 100, 0, 0.9);
+  pointer-events: none;
+  z-index: 10;
+  transform: translate(-50%, -50%);
+  animation: explode 0.6s ease-out forwards;
 }
 }
 </style>
